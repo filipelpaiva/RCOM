@@ -95,12 +95,6 @@ int llopen(LinkLayer connectionParameters)
                 }
                     nretransmissions--;
             }
-            unsigned char buf[BUF_SIZE] = {0};    
-            buf[0]=0x7E;
-            buf[1]=0x03;
-            buf[2]=0x03;
-            buf[3]=buf[1] ^ buf[2];
-            buf[4]=0x7E;
             if (state != STOPP) return -1;
             break; 
         }
@@ -162,12 +156,6 @@ int llopen(LinkLayer connectionParameters)
 
                 }
             }
-            unsigned char buf[BUF_SIZE] = {0};
-            buf[0]=0x7E;
-            buf[1]=0x01;
-            buf[2]=0x07;
-            buf[3]=0x06;
-            buf[4]=0x7E;
         }
         int bytes = writeBytesSerialPort(buf,5);
         break;
