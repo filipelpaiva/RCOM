@@ -4,7 +4,11 @@
 #include "serial_port.h"
 
 #include <unistd.h>
-
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <stdbool.h>
 
 // MISC
 #define _POSIX_SOURCE 1 // POSIX compliant source
@@ -26,6 +30,14 @@ typedef enum{
     STOPP,
 } State;
 
+
+volatile int timeout_flag = FALSE;
+
+void alarm_handler(int signo)
+{
+    timeout_flag = TRUE;
+}
+
 ////////////////////////////////////////////////
 // LLOPEN
 ////////////////////////////////////////////////
@@ -34,6 +46,7 @@ int llopen(LinkLayer connectionParameters)
     int nretransmissions = connectionParameters.nRetransmissions;
     int timeout = connectionParameters.timeout;
 
+        //error handling
     if (openSerialPort(connectionParameters.serialPort, connectionParameters.baudRate)< 0)
     {
         perror("openSerialPort");
@@ -47,15 +60,22 @@ int llopen(LinkLayer connectionParameters)
 
     switch(connectionParameters.role) {
         case LlTx: {
+            (void) signal(SIGALRM, alarm_handler);
             State state = START;
             while(nretransmissions != 0) {
-
+                
                 int bytesWritten = writeBytesSerialPort(SET_FRAME, BUF_SIZE);
+                //error handling
                 if (bytesWritten != BUF_SIZE) {
                     perror("writeBytesSerialPort SET");
                     closeSerialPort();
                     return -1;
                 }
+                
+                alarm(timeout);
+                timeout_flag = FALSE;
+
+
                 printf("Transmitter: Sent SET frame (Try %d/%d). Frame: 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X\n", 
                     nretransmissions, connectionParameters.nRetransmissions, 
                     SET_FRAME[0], SET_FRAME[1], SET_FRAME[2], SET_FRAME[3], SET_FRAME[4]);
@@ -63,9 +83,8 @@ int llopen(LinkLayer connectionParameters)
                 state = START;
                 unsigned char byte;
 
-                while(state != STOPP) {
+                while(state != STOPP && timeout_flag == FALSE) {
                     int bytesRead = readByteSerialPort(&byte);
-
                     //error handling
                     if(bytesRead == -1) {
                         perror("readByteSerialPort");
@@ -117,9 +136,12 @@ int llopen(LinkLayer connectionParameters)
                                 break;
                     }
                 }
+                
+                alarm(0);
 
                 if (state == STOPP) {
                     printf("Transmitter: UA received successfully. Connection established.\n");
+                    closeSerialPort();
                     return 0;
                 }
 
