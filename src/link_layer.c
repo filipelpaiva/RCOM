@@ -20,6 +20,16 @@
 #define C_UA 0x07  // Campo de Controlo para UA
 #define BCC_SET (A_T ^ C_SET) // BCC para SET: 0x03 ^ 0x03 = 0x00
 #define BCC_UA (A_R ^ C_UA)  // BCC para UA: 0x01 ^ 0x07 = 0x06
+#define ESC 0x7D
+#define STUFF_7E 0x5E  // 0x7E -> {0x7D, 0x5E}
+#define STUFF_7D 0x5D  // 0x7D -> {0x7D, 0x5D}
+#define C_I(ns) ((ns) ? 0x40 : 0x00)
+#define C_RR(nr) (0x05 | ((nr) << 7))
+#define C_REJ(ns) (0x01 | ((ns) << 7))
+
+int nretransmissions;
+int timeout;
+static int ns = 0; //sequence number
 
 typedef enum{
     START,
@@ -43,8 +53,8 @@ void alarm_handler(int signo)
 ////////////////////////////////////////////////
 int llopen(LinkLayer connectionParameters)
 {
-    int nretransmissions = connectionParameters.nRetransmissions;
-    int timeout = connectionParameters.timeout;
+    nretransmissions = connectionParameters.nRetransmissions;
+    timeout = connectionParameters.timeout;
 
         //error handling
     if (openSerialPort(connectionParameters.serialPort, connectionParameters.baudRate)< 0)
@@ -238,9 +248,128 @@ int llopen(LinkLayer connectionParameters)
 ////////////////////////////////////////////////
 int llwrite(const unsigned char *buf, int bufSize)
 {
-    // TODO: Implement this function
+    // Check preconditions
+    if (buf == NULL || bufSize <= 0 || bufSize > BUF_SIZE) return -1;
 
-    return 0;
+    // Calculate BCC2
+    unsigned char bcc2 = buf[0];
+    for (int i = 1; i < bufSize; i++) {
+        bcc2 ^= buf[i];
+    }
+
+    // Prepare data with BCC2 (before stuffing)
+    unsigned char data[bufSize + 1];
+    memcpy(data, buf, bufSize); //copy a sequence of bytes from buf to data, (bufSize = number of bytes being copied)
+    data[bufSize] = bcc2;
+    int dataSize = bufSize + 1;
+
+    // Perform byte stuffing
+    unsigned char stuffed[2 * dataSize];  // Worst-case size
+    int stuffedSize = 0;
+    for (int i = 0; i < dataSize; i++) {
+        if (data[i] == FLAG) {
+            stuffed[stuffedSize++] = ESC;
+            stuffed[stuffedSize++] = STUFF_7E;
+        } else if (data[i] == ESC) {
+            stuffed[stuffedSize++] = ESC;
+            stuffed[stuffedSize++] = STUFF_7D;
+        } else {
+            stuffed[stuffedSize++] = data[i];
+        }
+    }
+
+    // Build I frame
+    unsigned char C = C_I(ns); // 0x00 or 0x40
+    unsigned char bcc1 = A_T ^ C;
+    int frameSize = stuffedSize + 5; // FLAG | A | C | BCC1 | stuffed_data | FLAG
+    unsigned char *frame = (unsigned char *)malloc(frameSize * sizeof(unsigned char));
+    if (frame == NULL) return -1;
+    frame[0] = FLAG;
+    frame[1] = A_T;
+    frame[2] = C;
+    frame[3] = bcc1;
+    memcpy(frame + 4, stuffed, stuffedSize);
+    frame[frameSize - 1] = FLAG;
+
+    // Prepare for retransmissions
+    int currentTry = 0;
+    int nr = (ns + 1) % 2; //next expected sequence number
+    unsigned char expected_rr_C = C_RR(nr); // 0x05 | (nr << 7)
+    unsigned char rej_C = C_REJ(ns);        // 0x01 | (ns << 7)
+    State state = START;
+    
+    do {
+        // Send frame
+        int bytesWritten = writeBytesSerialPort(frame, frameSize);
+        if (bytesWritten != frameSize) {
+            perror("writeBytesSerialPort I frame");
+            return -1;
+        }
+
+        // Set alarm
+        alarm(timeout);
+        timeout_flag = FALSE;
+
+        // Wait for response
+        unsigned char byte, received_A = 0, received_C = 0, received_BCC1 = 0;
+        while (state != STOPP && !timeout_flag) {
+            int bytesRead = readByteSerialPort(&byte);
+            if (bytesRead <= 0) continue; // No data or error, loop
+
+            switch (state) {
+                case START:
+                    if (byte == FLAG) state = FLAG_RCV;
+                    printf("Start - Byte: 0x%02X\n", byte);
+                    break;
+                case FLAG_RCV:
+                    if (byte == A_R) { state = A_RCV; received_A = byte; }
+                    else if (byte != FLAG) state = START;
+                    printf("Flag - Byte: 0x%02X\n", byte);
+                    break;
+                case A_RCV:
+                    if (byte == expected_rr_C || byte == rej_C) {
+                        state = C_RCV; received_C = byte;
+                    } else if (byte == FLAG) state = FLAG_RCV;
+                    else state = START;
+                    printf("A - Byte: 0x%02X\n", byte);
+                    break;
+                case C_RCV:
+                    if (byte == (received_A ^ received_C)) {
+                        state = BCC_RCV; received_BCC1 = byte;
+                    } else if (byte == FLAG) state = FLAG_RCV;
+                    else state = START;
+                    printf("C - Byte: 0x%02X\n", byte);
+                    break;
+                case BCC_RCV:
+                    if (byte == FLAG) state = STOPP;
+                    else state = START;
+                    printf("BCC - Byte: 0x%02X\n", byte);
+                    break;
+            }
+        }
+        alarm(0); // Cancel alarm
+
+        if (state == STOPP) {
+            if (received_BCC1 == (received_A ^ received_C)) {
+                if (received_C == expected_rr_C) {
+                    printf("Received RR (positive ack)\n");
+                    ns = 1 - ns; // Toggle sequence number
+                    return bufSize; // Success
+                } else if (received_C == rej_C) {
+                    printf("Received REJ (negative ack). Retransmitting...\n");
+                }
+            } else {
+                printf("Invalid BCC1 in response. Retransmitting...\n");
+            }
+        } else {
+            printf("Timeout. Retransmitting...\n");
+        }
+        currentTry++;
+    } while (currentTry < nretransmissions);
+
+    printf("Max retransmissions reached. Failed.\n");
+    free(frame);
+    return -1;
 }
 
 ////////////////////////////////////////////////
