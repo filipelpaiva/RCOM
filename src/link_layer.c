@@ -23,6 +23,7 @@
 #define ESC 0x7D
 #define STUFF_7E 0x5E  // 0x7E -> {0x7D, 0x5E}
 #define STUFF_7D 0x5D  // 0x7D -> {0x7D, 0x5D}
+#define C_DISC 0x0B 
 #define C_I(ns) ((ns) ? 0x40 : 0x00)
 #define C_RR(nr) (0x05 | ((nr) << 7))
 #define C_REJ(ns) (0x01 | ((ns) << 7))
@@ -373,10 +374,37 @@ int llwrite(const unsigned char *buf, int bufSize)
 }
 ////////////////////////////////////////////////
 // LLREAD
-////////////////////////////////////////////////
-int llread(unsigned char *packet)
-{
-    // TODO: Implement this function
+/////////////////////////////////i
+    
+    unsigned char byte, received_C = 0;    unsigned char byte;
+    State state = START;
+    while (state != STOPP){
+        if (readByteSerialPort(byte)>1){
+            switch (state){
+                case START:
+                    if (byte == FLAG) state = FLAG_RCV;
+                    break;
+                case FLAG_RCV:
+{} RECIVED_a = recei             if (byte == A_R) state = A_RCV;
+                    else if (byte != FLAG) state = START;
+                    break;
+
+                    (if byte == C_I(0) || byte == C_I(1)){
+
+                        received_C = byte;
+                        state = C_RCV;                    } A_RCV:
+ else if (byte != FLAG) stat= = START;FlaL     AG_RCV 
+                    else if (byte == C_DISC) {
+                        unsigned char frame[5] = {FLAG_RCV, A_R, C_DISC, A_R ^ C_DISC, FLAG}
+                        writeBytesSerialPort(frame, 5);
+                    } else { state = START;}
+                    break;              
+            }
+        }
+
+    }
+
+    
 
     return 0;
 }
@@ -386,7 +414,81 @@ int llread(unsigned char *packet)
 ////////////////////////////////////////////////
 int llclose()
 {
-    // TODO: Implement this function
 
-    return 0;
+    State state = START;
+    unsigned char byte;
+    const unsigned char DISC[BUF_SIZE] = {FLAG, A_T, C_DISC, A_T ^ C_DISC, FLAG};
+    
+    while (nretransmissions != 0 && state != STOPP) {
+        int bytesWritten = writeBytesSerialPort(DISC, BUF_SIZE);
+        
+        //error handling
+        if (bytesWritten != BUF_SIZE) {
+            perror("writeBytesSerialPort SET");
+            closeSerialPort();
+            return -1;
+        }
+        
+        state = START;
+        unsigned char byte;
+        
+        while(state != STOPP) {
+            int bytesRead = readByteSerialPort(&byte);
+
+            //error handling
+            if(bytesRead == -1) {
+                perror("readByteSerialPort");
+                break;
+            }
+
+            switch(state){
+
+                case START:
+                        if(byte == FLAG)  state = FLAG_RCV;
+                        printf("Start\n");
+                        printf("Byte received: 0x%02X\n", byte);
+                        break;
+
+
+                case FLAG_RCV:
+                        if(byte == A_R)   state = A_RCV;
+                        else if(byte != FLAG) state = START;
+                        printf("Flag\n");
+                        printf("Byte received: 0x%02X\n", byte);
+                        break;
+
+
+                case A_RCV:
+                        if(byte == FLAG) state = FLAG_RCV;
+                        else if(byte == C_DISC) state = C_RCV;
+                        else state = START;
+                        printf("A\n");
+                        printf("Byte received: 0x%02X\n", byte);
+                        break;
+
+
+                case C_RCV:
+                        if(byte == A_R ^ C_DISC) state = BCC_RCV;
+                        else if(byte == FLAG) state = FLAG_RCV;
+                        else state = START;
+                        printf("C\n");
+                        printf("Byte received: 0x%02X\n", byte);
+                        break;
+
+                case BCC_RCV:
+                        if(byte == FLAG) state = STOPP;
+                        else state = START;
+                        printf("BCC\n");
+                        printf("Byte received: 0x%02X\n", byte);
+                        break;
+
+                default:
+                        break;
+            }
+        }
+        nretransmissions--;
+    }
+
+    if (state != STOP_R) return -1;
+    return closeSerialPort();
 }
