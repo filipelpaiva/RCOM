@@ -31,6 +31,7 @@
 int nretransmissions;
 int timeout;
 static int ns = 0; //sequence number
+LinkLayerRole role;
 
 typedef enum{
     START,
@@ -77,7 +78,7 @@ int llopen(LinkLayer connectionParameters)
                 
                 int bytesWritten = writeBytesSerialPort(SET_FRAME, BUF_SIZE);
                 //error handling
-                if (bytesWritten != BUF_SIZE) {
+                if (bytesWritten == -1) {
                     perror("writeBytesSerialPort SET");
                     closeSerialPort();
                     return -1;
@@ -375,7 +376,7 @@ int llwrite(const unsigned char *buf, int bufSize)
 ////////////////////////////////////////////////
 // LLREAD
 /////////////////////////////////i
-    
+int llread(unsigned char *packet) {
     unsigned char byte, received_C = 0;    unsigned char byte;
     State state = START;
     while (state != STOPP){
@@ -414,81 +415,217 @@ int llwrite(const unsigned char *buf, int bufSize)
 ////////////////////////////////////////////////
 int llclose()
 {
-
+    (void) signal(SIGALRM, alarm_handler);
     State state = START;
     unsigned char byte;
-    const unsigned char DISC[BUF_SIZE] = {FLAG, A_T, C_DISC, A_T ^ C_DISC, FLAG};
     
-    while (nretransmissions != 0 && state != STOPP) {
-        int bytesWritten = writeBytesSerialPort(DISC, BUF_SIZE);
-        
-        //error handling
-        if (bytesWritten != BUF_SIZE) {
-            perror("writeBytesSerialPort SET");
+    switch(role) {
+        case LlTx:
+            const unsigned char DISC_T[5] = {FLAG, A_T, C_DISC, A_T ^ C_DISC, FLAG};
+            const unsigned char UA_T[5] = {FLAG, A_T, C_UA, A_T ^ C_UA, FLAG};
+            
+            while (nretransmissions != 0) {
+
+                int bytesWritten = writeBytesSerialPort(DISC_T, 5);
+                //error handling
+                if (bytesWritten != 5) {
+                    perror("writeBytesSerialPort SET");
+                    closeSerialPort();
+                    return -1;
+                }
+                
+                //DISC enviado
+
+                alarm(timeout);
+                state = START;
+                timeout_flag = FALSE;
+                
+                while(state != STOPP && timeout_flag == FALSE) {
+
+                    int bytesRead = readByteSerialPort(&byte);
+                    //error handling
+                    if(bytesRead == -1) {
+                        perror("readByteSerialPort");
+                        break;
+                    }
+
+                    switch(state){
+
+                        case START:
+                                if(byte == FLAG)  state = FLAG_RCV;
+                                printf("Start\n");
+                                printf("Byte received: 0x%02X\n", byte);
+                                break;
+
+
+                        case FLAG_RCV:
+                                if(byte == A_R)   state = A_RCV;
+                                else if(byte != FLAG) state = START;
+                                printf("Flag\n");
+                                printf("Byte received: 0x%02X\n", byte);
+                                break;
+
+
+                        case A_RCV:
+                                if(byte == FLAG) state = FLAG_RCV;
+                                else if(byte == C_DISC) state = C_RCV;
+                                else state = START;
+                                printf("A\n");
+                                printf("Byte received: 0x%02X\n", byte);
+                                break;
+
+
+                        case C_RCV:
+                                if(byte == A_R ^ C_DISC) state = BCC_RCV;
+                                else if(byte == FLAG) state = FLAG_RCV;
+                                else state = START;
+                                printf("C\n");
+                                printf("Byte received: 0x%02X\n", byte);
+                                break;
+
+                        case BCC_RCV:
+                                if(byte == FLAG) state = STOPP;
+                                else state = START;
+                                printf("BCC\n");
+                                printf("Byte received: 0x%02X\n", byte);
+                                break;
+
+                        default:
+                                break;
+                    }
+                }
+                alarm(0);
+
+                if(state == STOPP) {
+                    //DISC recebido
+                    int bytesWritten = writeBytesSerialPort(UA_T, 5);
+                    //error handling
+                    if(bytesWritten != 5) {
+                        perror("writeBytesSerialPort UA_T");
+                        closeSerialPort();
+                        return -1;  
+                    }
+                    //UA final enviado
+                    printf("Receiver: final UA sent: 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X\n", 
+                        UA_T[0], UA_T[1], UA_T[2], UA_T[3], UA_T[4]);
+                    closeSerialPort();
+                    return 0;
+                }
+                nretransmissions--;
+            }
+            printf("Transmitter: Máximo de retransmissões atingido. A forçar fecho.\n");
             closeSerialPort();
             return -1;
-        }
         
-        state = START;
-        unsigned char byte;
-        
-        while(state != STOPP) {
-            int bytesRead = readByteSerialPort(&byte);
+        case LlRx:
+            const unsigned char DISC_R[5] = {FLAG, A_R, C_DISC, A_R ^ C_DISC, FLAG};
+            state = START;
 
-            //error handling
-            if(bytesRead == -1) {
-                perror("readByteSerialPort");
-                break;
+            while(state != STOPP) {
+
+                int bytesread = readByteSerialPort(&byte);
+                //error handling
+                if (bytesread == -1) {
+                    perror("readByteSerialPort");
+                    break;
+                }
+
+                switch (state) {
+                    case START:
+                        if (byte == FLAG) state = FLAG_RCV;
+                        break;
+                    case FLAG_RCV:
+                        if (byte == A_T) state = A_RCV;
+                        else if (byte != FLAG) state = START;
+                        break;
+                    case A_RCV:
+                        if (byte == C_DISC) state = C_RCV;
+                        else if (byte == FLAG) state = FLAG_RCV;
+                        else state = START;
+                        break;
+                    case C_RCV:
+                        if (byte == (A_T ^ C_DISC)) state = BCC_RCV;
+                        else if (byte == FLAG) state = FLAG_RCV;
+                        else state = START;
+                        break;
+                    case BCC_RCV:
+                        if (byte == FLAG) state = STOPP;
+                        else state = START;
+                        break;
+                    default:
+                        break;
+                }
+            }
+            //receiver recebeu DISC
+
+            state = START;
+
+            while(nretransmissions != 0) {
+
+                int bytesWritten = writeBytesSerialPort(DISC_R, 5);
+                //error handling
+                if (bytesWritten == -1) {
+                    perror("llclose(Rx): writeBytesSerialPort(DISC_RX)");
+                    closeSerialPort();
+                    return -1;
+                }
+
+                //receiver enviou DISC e aguarda UA final
+                alarm(timeout);
+                timeout_flag = FALSE;
+                state = START;
+
+                while(state != STOPP && timeout_flag == FALSE) {
+
+                    int bytesRead = readByteSerialPort(&byte);
+                    //error handling
+                    if(bytesRead == -1) {
+                        perror("readByteSerialPort");
+                        break;
+                    }
+
+                    switch (state) {
+                        case START:
+                            if (byte == FLAG) state = FLAG_RCV;
+                            break;
+                        case FLAG_RCV:
+                            if (byte == A_T) state = A_RCV;
+                            else if (byte != FLAG) state = START;
+                            break;
+                        case A_RCV:
+                            if (byte == C_UA) state = C_RCV;
+                            else if (byte == FLAG) state = FLAG_RCV;
+                            else state = START;
+                            break;
+                        case C_RCV:
+                            if (byte == (A_T ^ C_UA)) state = BCC_RCV;
+                            else if (byte == FLAG) state = FLAG_RCV;
+                            else state = START;
+                            break;
+                        case BCC_RCV:
+                            if (byte == FLAG) state = STOPP;
+                            else state = START;
+                            break;
+                        default:
+                            break;
+                    }
+                }
+                alarm(0);
+
+                if(state == STOPP) {
+                    //Rx recebeu UA final do Tx
+                    closeSerialPort();
+                    return 0;
+                }
+
+                //retry por timeout
+                nretransmissions--;
             }
 
-            switch(state){
-
-                case START:
-                        if(byte == FLAG)  state = FLAG_RCV;
-                        printf("Start\n");
-                        printf("Byte received: 0x%02X\n", byte);
-                        break;
-
-
-                case FLAG_RCV:
-                        if(byte == A_R)   state = A_RCV;
-                        else if(byte != FLAG) state = START;
-                        printf("Flag\n");
-                        printf("Byte received: 0x%02X\n", byte);
-                        break;
-
-
-                case A_RCV:
-                        if(byte == FLAG) state = FLAG_RCV;
-                        else if(byte == C_DISC) state = C_RCV;
-                        else state = START;
-                        printf("A\n");
-                        printf("Byte received: 0x%02X\n", byte);
-                        break;
-
-
-                case C_RCV:
-                        if(byte == A_R ^ C_DISC) state = BCC_RCV;
-                        else if(byte == FLAG) state = FLAG_RCV;
-                        else state = START;
-                        printf("C\n");
-                        printf("Byte received: 0x%02X\n", byte);
-                        break;
-
-                case BCC_RCV:
-                        if(byte == FLAG) state = STOPP;
-                        else state = START;
-                        printf("BCC\n");
-                        printf("Byte received: 0x%02X\n", byte);
-                        break;
-
-                default:
-                        break;
-            }
-        }
-        nretransmissions--;
+            //tentativas esgotadas
+            printf("Rx: Max retransmissões. Forçar fecho.\n");
+            closeSerialPort();
+            return -1;
     }
-
-    if (state != STOP_R) return -1;
-    return closeSerialPort();
+    return -1;
 }
