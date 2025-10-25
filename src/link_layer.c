@@ -57,6 +57,7 @@ int llopen(LinkLayer connectionParameters)
 {
     nretransmissions = connectionParameters.nRetransmissions;
     timeout = connectionParameters.timeout;
+    int tries = 0;
 
         //error handling
     if (openSerialPort(connectionParameters.serialPort, connectionParameters.baudRate)< 0)
@@ -423,8 +424,9 @@ int llclose()
         case LlTx:
             const unsigned char DISC_T[5] = {FLAG, A_T, C_DISC, A_T ^ C_DISC, FLAG};
             const unsigned char UA_T[5] = {FLAG, A_T, C_UA, A_T ^ C_UA, FLAG};
+            int tries = 0;
             
-            while (nretransmissions != 0) {
+            while (tries < nretransmissions) {
 
                 int bytesWritten = writeBytesSerialPort(DISC_T, 5);
                 //error handling
@@ -511,7 +513,7 @@ int llclose()
                     closeSerialPort();
                     return 0;
                 }
-                nretransmissions--;
+                tries++;
             }
             printf("Transmitter: Máximo de retransmissões atingido. A forçar fecho.\n");
             closeSerialPort();
@@ -559,8 +561,9 @@ int llclose()
             //receiver recebeu DISC
 
             state = START;
+            int tries = 0;
 
-            while(nretransmissions != 0) {
+            while(tries < nretransmissions) {
 
                 int bytesWritten = writeBytesSerialPort(DISC_R, 5);
                 //error handling
@@ -619,7 +622,7 @@ int llclose()
                 }
 
                 //retry por timeout
-                nretransmissions--;
+                tries++;
             }
 
             //tentativas esgotadas
