@@ -224,7 +224,8 @@ int llopen(LinkLayer connectionParameters)
 }
 
 ////////////////////////////////////////////////
-// LLWRITE
+// 
+LLWRITE
 ////////////////////////////////////////////////
 int llwrite(const unsigned char *buf, int bufSize)
 {
@@ -239,8 +240,8 @@ int llwrite(const unsigned char *buf, int bufSize)
     if (buf == NULL || bufSize <= 0 || bufSize > BUF_SIZE) return -1;
 
     // Calculate BCC2
-    unsigned char bcc2 = buf[0];
-    for (int i = 1; i < bufSize; i++) {
+    unsigned char bcc2 = 0;
+    for (int i = 0; i < bufSize; i++) {
         bcc2 ^= buf[i];
     }
 
@@ -279,14 +280,13 @@ int llwrite(const unsigned char *buf, int bufSize)
     frame[frameSize - 1] = FLAG;
 
     // Prepare for retransmissions
-    int tries = nretransmissions;
-    int currentTry = 0;
+    int attempts = nretransmissions + 1;  // primeira tentativa + retransmissões
     State state = START;
     unsigned char expected_rr = C_RR(1 - ns); // 0x05 | (nr << 7)
     unsigned char expected_rej = C_REJ(ns);        // 0x01 | (ns << 7)
    
     
-    do {
+    while (attempts--){
         // Send frame
         int bytesWritten = writeBytesSerialPort(frame, frameSize);
         if (bytesWritten != frameSize) {
@@ -301,6 +301,7 @@ int llwrite(const unsigned char *buf, int bufSize)
 
         // Wait for response
         unsigned char byte, received_A = 0, received_C = 0, received_BCC1 = 0;
+        state = START; //reset the state machine for each attempt
         while (state != STOPP && !timeout_flag) {
             int bytesRead = readByteSerialPort(&byte);
             if (bytesRead <= 0) continue; // No data or error, loop
@@ -308,31 +309,26 @@ int llwrite(const unsigned char *buf, int bufSize)
             switch (state) {
                 case START:
                     if (byte == FLAG) state = FLAG_RCV;
-                    printf("Start - Byte: 0x%02X\n", byte);
                     break;
                 case FLAG_RCV:
                     if (byte == A_R) { state = A_RCV; received_A = byte; }
                     else if (byte != FLAG) state = START;
-                    printf("Flag - Byte: 0x%02X\n", byte);
                     break;
                 case A_RCV:
                     if (byte == expected_rr || byte == expected_rej) {
                         state = C_RCV; received_C = byte;
                     } else if (byte == FLAG) state = FLAG_RCV;
                     else state = START;
-                    printf("A - Byte: 0x%02X\n", byte);
                     break;
                 case C_RCV:
                     if (byte == (received_A ^ received_C)) {
                         state = BCC_RCV; received_BCC1 = byte;
                     } else if (byte == FLAG) state = FLAG_RCV;
                     else state = START;
-                    printf("C - Byte: 0x%02X\n", byte);
                     break;
                 case BCC_RCV:
                     if (byte == FLAG) state = STOPP;
                     else state = START;
-                    printf("BCC - Byte: 0x%02X\n", byte);
                     break;
             }
         }
@@ -345,13 +341,10 @@ int llwrite(const unsigned char *buf, int bufSize)
                     free(frame);
                     return bufSize; // Success
                 } else if (received_C == expected_rej) {
-                    printf("Received REJ (negative ack). Retransmitting...\n");
+                    continue;
                 }
         }
-        tries--;
-    } while (tries>0);
-
-    printf("Max retransmissions reached. Failed.\n");
+    }
     free(frame);
     return -1;
 }
@@ -393,9 +386,9 @@ int llread(unsigned char *packet)
 
             case A_RCV:
                 if (byte == C_I(0) || byte == C_I(1)) {
-                    c_field    = byte;
+                    c_field = byte;
                     ns_received = (byte == C_I(1)) ? 1 : 0;
-                    state      = C_RCV;
+                    state = C_RCV;
                 } else if (byte == FLAG) {
                     state = FLAG_RCV;
                 } else {
@@ -424,12 +417,12 @@ int llread(unsigned char *packet)
                     // 1. Destuff completo (inclui BCC2)
                     unsigned char destuffed[2 * BUF_SIZE];
                     int destuffed_len = 0;
-                    if (destuff(stuffed, stuffed_len, destuffed, &destuffed_len) != 0) {
-                        state = START;
-                        continue;
-                    }
 
-                    if (destuffed_len < 1) {
+                    // O campo de dados + BCC2 deve ter pelo menos 1 byte (BCC2).
+                    // Se destuffed_len == 0 → não tem nem o BCC2 → frame incompleto ou corrompido.
+                    // frame invalido:corrompido ou incompleto
+                    if (destuff(stuffed, stuffed_len, destuffed, &destuffed_len) != 0 || destuffed_len < 1) {
+                        send_REJ(ns_received);
                         state = START;
                         continue;
                     }
@@ -437,15 +430,13 @@ int llread(unsigned char *packet)
                     // 2. Separar BCC2 (último byte) e dados
                     unsigned char bcc2_recv = destuffed[destuffed_len - 1];
                     int data_len = destuffed_len - 1;
-                    if (data_len > 0) {
-                        memcpy(packet, destuffed, data_len);
+                    // 3. Calcular BCC2
+                    unsigned char bcc2_calc = 0;
+                    for (int i = 0; i < data_len; i++) {
+                        bcc2_calc ^= destuffed[i];
                     }
+                    
 
-                    // 3. Calcular BCC2 sobre os dados
-                    unsigned char bcc2_calc = (data_len > 0) ? packet[0] : 0;
-                    for (int i = 1; i < data_len; ++i) {
-                        bcc2_calc ^= packet[i];
-                    }
 
                     // 4. Determinar se é novo ou duplicado
                     bool is_new_frame = (ns_received == expected_ns);
@@ -470,14 +461,17 @@ int llread(unsigned char *packet)
                     }
 
                     // Sucesso: novo frame, BCC2 OK
+                    memcpy(packet, destuffed, data_len);
                     send_RR(1 - expected_ns);
                     expected_ns = 1 - expected_ns;
                     return data_len;                         // Entrega pacote à camada superior
 
                 } else {
                     // Acumula dados stuffed
-                    if (stuffed_len >= (int)sizeof(stuffed) - 1) {
+                    if (stuffed_len >= (int)sizeof(stuffed) - 1) { //evitar overflows
+                        send_REJ(ns_received);
                         state = START;
+                        stuffed_len = 0;
                         continue;
                     }
                     stuffed[stuffed_len++] = byte;
