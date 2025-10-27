@@ -29,6 +29,10 @@
 #define C_RR(nr) (0x05 | ((nr) << 7))
 #define C_REJ(ns) (0x01 | ((ns) << 7))
 
+#define TRUE 1
+#define FALSE 0
+
+
 int nretransmissions;
 int timeout;
 LinkLayerRole role;
@@ -48,6 +52,43 @@ volatile int timeout_flag = FALSE;
 void alarm_handler(int signo)
 {
     timeout_flag = TRUE;
+}
+
+static void send_RR(int nr) {
+    unsigned char frame[5] = {FLAG, A_R, C_RR(nr), A_R ^ C_RR(nr), FLAG};
+    writeBytesSerialPort(frame, 5);
+}
+
+static void send_REJ(int ns) {
+    unsigned char frame[5] = {FLAG, A_R, C_REJ(ns), A_R ^ C_REJ(ns), FLAG};
+    writeBytesSerialPort(frame, 5);
+}
+
+static int destuff(const unsigned char *stuffed, int stuffed_len,
+                        unsigned char *destuffed, int *destuffed_len)
+{
+    if (stuffed == NULL || destuffed == NULL || destuffed_len == NULL || stuffed_len < 1)
+        return -1;
+
+    int i = 0, j = 0;
+    while (i < stuffed_len) {
+        if (stuffed[i] == ESC) {
+            ++i;
+            if (i >= stuffed_len) return -1;
+            if (stuffed[i] == STUFF_7E) {
+                destuffed[j++] = FLAG;
+            } else if (stuffed[i] == STUFF_7D) {
+                destuffed[j++] = ESC;
+            } else {
+                return -1;  // Sequência inválida
+            }
+        } else {
+            destuffed[j++] = stuffed[i];
+        }
+        ++i;
+    }
+    *destuffed_len = j;
+    return 0;
 }
 
 ////////////////////////////////////////////////
@@ -78,6 +119,7 @@ int llopen(LinkLayer connectionParameters)
                 int bytesWritten = writeBytesSerialPort(SET_FRAME, 5);
                 //error handling
                 //if (bytesWritten == -1) return -1;
+                if (bytesWritten != 5) return -1;
                 
                 alarm(timeout);
                 timeout_flag = FALSE;
@@ -158,21 +200,23 @@ int llopen(LinkLayer connectionParameters)
             
             while(state != STOPP) {
                 int bytesRead = readByteSerialPort(&byte);
+                // if (bytesRead < 0) return -1; // Error
+                // if (bytesRead == 0) continue; // No data
                 if (bytesRead == 1) {
                     switch(state){
 
                         case START:
                                 if(byte == FLAG)  state = FLAG_RCV;
-                                printf("Start\n");
-                                printf("Byte received: 0x%02X\n", byte);
+                                // printf("Start\n");
+                                // printf("Byte received: 0x%02X\n", byte);
                                 break;
 
 
                         case FLAG_RCV:
                                 if(byte == A_T)   state = A_RCV;
                                 else if(byte != FLAG) state = START;
-                                printf("Flag\n");
-                                printf("Byte received: 0x%02X\n", byte);
+                                // printf("Flag\n");
+                                // printf("Byte received: 0x%02X\n", byte);
                                 break;
 
 
@@ -180,8 +224,8 @@ int llopen(LinkLayer connectionParameters)
                                 if(byte == C_SET) state = C_RCV;
                                 else if(byte == FLAG) state = FLAG_RCV;
                                 else state = START;
-                                printf("A\n");
-                                printf("Byte received: 0x%02X\n", byte);
+                                // printf("A\n");
+                                // printf("Byte received: 0x%02X\n", byte);
                                 break;
 
 
@@ -189,15 +233,15 @@ int llopen(LinkLayer connectionParameters)
                                 if(byte == BCC_SET) state = BCC_RCV;
                                 else if(byte == FLAG) state = FLAG_RCV;
                                 else state = START;
-                                printf("C\n");
-                                printf("Byte received: 0x%02X\n", byte);
+                                // printf("C\n");
+                                // printf("Byte received: 0x%02X\n", byte);
                                 break;
 
                         case BCC_RCV:
                                 if(byte == FLAG) state = STOPP;
                                 else state = START;
-                                printf("BCC\n");
-                                printf("Byte received: 0x%02X\n", byte);
+                                // printf("BCC\n");
+                                // printf("Byte received: 0x%02X\n", byte);
                                 break;
 
                         default:
@@ -225,7 +269,7 @@ int llopen(LinkLayer connectionParameters)
 
 ////////////////////////////////////////////////
 // 
-LLWRITE
+//LLWRITE
 ////////////////////////////////////////////////
 int llwrite(const unsigned char *buf, int bufSize)
 {
@@ -270,8 +314,7 @@ int llwrite(const unsigned char *buf, int bufSize)
     unsigned char C = C_I(ns); // 0x00 or 0x40
     unsigned char bcc1 = A_T ^ C;
     int frameSize = stuffedSize + 5; // FLAG | A | C | BCC1 | stuffed_data | FLAG
-    unsigned char *frame = (unsigned char *)malloc(frameSize * sizeof(unsigned char));
-    if (frame == NULL) return -1;
+    unsigned char frame[frameSize];
     frame[0] = FLAG;
     frame[1] = A_T;
     frame[2] = C;
@@ -280,18 +323,15 @@ int llwrite(const unsigned char *buf, int bufSize)
     frame[frameSize - 1] = FLAG;
 
     // Prepare for retransmissions
-    int attempts = nretransmissions + 1;  // primeira tentativa + retransmissões
-    State state = START;
     unsigned char expected_rr = C_RR(1 - ns); // 0x05 | (nr << 7)
     unsigned char expected_rej = C_REJ(ns);        // 0x01 | (ns << 7)
    
-    
-    while (attempts--){
+    int tries = 0;
+    while (tries < nretransmissions){
         // Send frame
         int bytesWritten = writeBytesSerialPort(frame, frameSize);
         if (bytesWritten != frameSize) {
             perror("writeBytesSerialPort I frame");
-            free(frame);
             return -1;
         }
 
@@ -299,12 +339,12 @@ int llwrite(const unsigned char *buf, int bufSize)
         alarm(timeout);
         timeout_flag = FALSE;
 
+        State state = START;
         // Wait for response
-        unsigned char byte, received_A = 0, received_C = 0, received_BCC1 = 0;
-        state = START; //reset the state machine for each attempt
+        unsigned char byte, received_A = 0, received_C = 0;
         while (state != STOPP && !timeout_flag) {
             int bytesRead = readByteSerialPort(&byte);
-            if (bytesRead <= 0) continue; // No data or error, loop
+            if (bytesRead <= 0) { continue; } 
 
             switch (state) {
                 case START:
@@ -322,7 +362,7 @@ int llwrite(const unsigned char *buf, int bufSize)
                     break;
                 case C_RCV:
                     if (byte == (received_A ^ received_C)) {
-                        state = BCC_RCV; received_BCC1 = byte;
+                        state = BCC_RCV;
                     } else if (byte == FLAG) state = FLAG_RCV;
                     else state = START;
                     break;
@@ -334,18 +374,18 @@ int llwrite(const unsigned char *buf, int bufSize)
         }
         alarm(0); // Cancel alarm
 
-        if (state == STOPP && received_BCC1 == (received_A ^ received_C)) {
+        if (state == STOPP) {
                 if (received_C == expected_rr) {
                     printf("Received RR (positive ack)\n");
                     ns = 1 - ns; // Toggle sequence number
-                    free(frame);
                     return bufSize; // Success
                 } else if (received_C == expected_rej) {
                     continue;
                 }
         }
+        tries++;
     }
-    free(frame);
+    printf("llwrite: Max retransmissions reached.\n");
     return -1;
 }
 
@@ -366,7 +406,8 @@ int llread(unsigned char *packet)
 
     while (1) {
         unsigned char byte;
-        if (readByteSerialPort(&byte) <= 0) continue;   // bloqueia até chegar um byte
+        int bytesRead = readByteSerialPort(&byte);
+        if (bytesRead <= 0) continue; //no data
 
         switch (state) {
             case START:
@@ -471,8 +512,6 @@ int llread(unsigned char *packet)
                     if (stuffed_len >= (int)sizeof(stuffed) - 1) { //evitar overflows
                         send_REJ(ns_received);
                         state = START;
-                        stuffed_len = 0;
-                        continue;
                     }
                     stuffed[stuffed_len++] = byte;
                 }
@@ -493,12 +532,13 @@ int llclose()
     (void) signal(SIGALRM, alarm_handler);
     State state = START;
     unsigned char byte;
+    int tries = 0;
     
     switch(role) {
         case LlTx:
             const unsigned char DISC_T[5] = {FLAG, A_T, C_DISC, A_T ^ C_DISC, FLAG};
             const unsigned char UA_T[5] = {FLAG, A_T, C_UA, A_T ^ C_UA, FLAG};
-            int tries = 0;
+           
             
             while (tries < nretransmissions) {
 
@@ -635,7 +675,7 @@ int llclose()
             //receiver recebeu DISC
 
             state = START;
-            int tries = 0;
+           
 
             while(tries < nretransmissions) {
 
@@ -707,39 +747,3 @@ int llclose()
     return -1;
 }
 
-static void send_RR(int nr) {
-    unsigned char frame[5] = {FLAG, A_R, C_RR(nr), A_R ^ C_RR(nr), FLAG};
-    writeBytesSerialPort(frame, 5);
-}
-
-static void send_REJ(int ns) {
-    unsigned char frame[5] = {FLAG, A_R, C_REJ(ns), A_R ^ C_REJ(ns), FLAG};
-    writeBytesSerialPort(frame, 5);
-}
-
-static int destuff(const unsigned char *stuffed, int stuffed_len,
-                        unsigned char *destuffed, int *destuffed_len)
-{
-    if (stuffed == NULL || destuffed == NULL || destuffed_len == NULL || stuffed_len < 1)
-        return -1;
-
-    int i = 0, j = 0;
-    while (i < stuffed_len) {
-        if (stuffed[i] == ESC) {
-            ++i;
-            if (i >= stuffed_len) return -1;
-            if (stuffed[i] == STUFF_7E) {
-                destuffed[j++] = FLAG;
-            } else if (stuffed[i] == STUFF_7D) {
-                destuffed[j++] = ESC;
-            } else {
-                return -1;  // Sequência inválida
-            }
-        } else {
-            destuffed[j++] = stuffed[i];
-        }
-        ++i;
-    }
-    *destuffed_len = j;
-    return 0;
-}
