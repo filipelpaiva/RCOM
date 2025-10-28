@@ -189,7 +189,7 @@ int llopen(LinkLayer connectionParameters)
                 }
 
                 tries++;
-                printf("Transmitter: Timeout or invalid frame. Retrying... %d tries left.\n", nretransmissions);
+                printf("Transmitter: Timeout or invalid frame. Retrying... %d tries left.\n", nretransmissions-tries);
             }
             printf("Transmitter: Max retransmissions reached. Connection failed.\n");
             return -1;
@@ -281,7 +281,10 @@ int llwrite(const unsigned char *buf, int bufSize)
     }
 
     // Check preconditions
-    if (buf == NULL || bufSize <= 0 || bufSize > BUF_SIZE) return -1;
+    if (buf == NULL || bufSize <= 0 || bufSize > MAX_PAYLOAD_SIZE) {
+        printf("Failed preconditions");
+        return -1;
+    }
 
     // Calculate BCC2
     unsigned char bcc2 = 0;
@@ -326,6 +329,11 @@ int llwrite(const unsigned char *buf, int bufSize)
     unsigned char expected_rr = C_RR(1 - ns); // 0x05 | (nr << 7)
     unsigned char expected_rej = C_REJ(ns);        // 0x01 | (ns << 7)
    
+    printf("llwrite: Sending ns=%d. Frame size=%d. Expecting RR=%02X or REJ=%02X\n",
+       ns, frameSize, expected_rr, expected_rej);
+    printf("llwrite: Frame header: %02X %02X %02X %02X\n", frame[0], frame[1], frame[2], frame[3]);
+    printf("llwrite: Frame end: ... %02X\n", frame[frameSize-1]);
+
     int tries = 0;
     while (tries < nretransmissions){
         // Send frame
@@ -401,7 +409,7 @@ int llread(unsigned char *packet)
 
     static int expected_ns = 0;               // sequência esperada
     State state = START;
-    unsigned char stuffed[2 * BUF_SIZE];
+    unsigned char stuffed[2 * (MAX_PAYLOAD_SIZE + 1)];
     int stuffed_len = 0;
     unsigned char c_field = 0;
     int ns_received = -1;
@@ -451,20 +459,26 @@ int llread(unsigned char *packet)
 
             case BCC_RCV:
                 if (byte == FLAG) {
+                    printf("\nllread: Received potential I-frame end. ns_received=%d. stuffed_len=%d.\n", ns_received, stuffed_len);
                     // Fim do I-frame recebido
                     if (stuffed_len < 1) {  // Pelo menos BCC2
+                        printf("llread: Frame too short (no BCC2?). Resetting state.\n");
                         state = START;
                         continue;
                     }
 
                     // 1. Destuff completo (inclui BCC2)
-                    unsigned char destuffed[2 * BUF_SIZE];
+                    unsigned char destuffed[2 * (MAX_PAYLOAD_SIZE + 1)];
                     int destuffed_len = 0;
 
+                    printf("llread: Calling destuff() with stuffed_len=%d\n", stuffed_len); // NOVO PRINTF
+                    int destuff_ret = destuff(stuffed, stuffed_len, destuffed, &destuffed_len); // Guardar retorno
+                    printf("llread: destuff() returned %d. destuffed_len=%d\n", destuff_ret, destuffed_len); // NOVO PRINTF
                     // O campo de dados + BCC2 deve ter pelo menos 1 byte (BCC2).
                     // Se destuffed_len == 0 → não tem nem o BCC2 → frame incompleto ou corrompido.
                     // frame invalido:corrompido ou incompleto
-                    if (destuff(stuffed, stuffed_len, destuffed, &destuffed_len) != 0 || destuffed_len < 1) {
+                    if (destuff_ret != 0 || destuffed_len < 1) {
+                        printf("llread: destuff failed or result too short. Sending REJ(%d).\n", ns_received);
                         send_REJ(ns_received);
                         state = START;
                         continue;
@@ -482,14 +496,18 @@ int llread(unsigned char *packet)
 
 
                     // 4. Determinar se é novo ou duplicado
+                    printf("llread: bcc2_recv=%02X, bcc2_calc=%02X. Data len=%d.\n", bcc2_recv, bcc2_calc, data_len);
                     bool is_new_frame = (ns_received == expected_ns);
                     bool bcc2_error = (bcc2_calc != bcc2_recv);
+                    printf("llread: ns_received=%d, expected_ns=%d -> is_new=%d. bcc2_error=%d.\n", ns_received, expected_ns, is_new_frame, bcc2_error);
 
                     // 5. Resposta conforme especificação (pág. 22)
                     if (bcc2_error) {
                         if (is_new_frame) {
+                            printf("llread: BCC2 error on NEW frame. Sending REJ(%d).\n", ns_received);
                             send_REJ(ns_received);           // Erro em novo → REJ
                         } else {
+                            printf("llread: BCC2 error on DUPLICATE frame. Sending RR(%d).\n", expected_ns);
                             send_RR(expected_ns);            // Erro em duplicado → RR
                         }
                         state = START;
@@ -498,12 +516,14 @@ int llread(unsigned char *packet)
 
                     // BCC2 correto
                     if (!is_new_frame) {
+                        printf("llread: DUPLICATE frame OK. Sending RR(%d).\n", expected_ns);
                         send_RR(expected_ns);                // Duplicado bom → RR
                         state = START;
                         continue;
                     }
 
                     // Sucesso: novo frame, BCC2 OK
+                    printf("llread: SUCCESS! New frame OK. Sending RR(%d). Returning %d bytes.\n", (1 - expected_ns), data_len);
                     memcpy(packet, destuffed, data_len);
                     send_RR(1 - expected_ns);
                     expected_ns = 1 - expected_ns;
@@ -624,7 +644,7 @@ int llclose()
                         return -1;  
                     }
                     //UA final enviado
-                    printf("Receiver: final UA sent: 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X\n", 
+                    printf("Transmitter: final UA sent: 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X\n", 
                         UA_T[0], UA_T[1], UA_T[2], UA_T[3], UA_T[4]);
                     closeSerialPort();
                     return 0;
