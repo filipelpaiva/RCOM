@@ -370,6 +370,8 @@ int llwrite(const unsigned char *buf, int bufSize)
                     if (byte == FLAG) state = STOPP;
                     else state = START;
                     break;
+                default:
+                    break;
             }
         }
         alarm(0); // Cancel alarm
@@ -562,7 +564,7 @@ int llclose()
                     //error handling
                     if(bytesRead == -1) {
                         perror("readByteSerialPort");
-                        break;
+                        continue;
                     }
 
                     switch(state){
@@ -592,7 +594,7 @@ int llclose()
 
 
                         case C_RCV:
-                                if(byte == A_R ^ C_DISC) state = BCC_RCV;
+                                if(byte == (A_R ^ C_DISC)) state = BCC_RCV;
                                 else if(byte == FLAG) state = FLAG_RCV;
                                 else state = START;
                                 printf("C\n");
