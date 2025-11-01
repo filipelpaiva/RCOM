@@ -216,8 +216,6 @@ int llopen(LinkLayer connectionParameters)
             while(state != STOPP) {
                 int bytesRead = readByteSerialPort(&byte);
                 if (bytesRead != 1) {
-                    // Isso NUNCA acontece com VMIN=1, VTIME=0
-                    // Mas deixamos por segurança
                     continue;
                 }
 
@@ -580,9 +578,8 @@ int llread(unsigned char *packet)
 ////////////////////////////////////////////////
 int llclose()
 {
-    // (void) signal(SIGALRM, alarm_handler);
     setup_alarm();
-    
+
     State state = START;
     unsigned char byte;
     int tries = 0;
