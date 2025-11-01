@@ -92,6 +92,17 @@ static int destuff(const unsigned char *stuffed, int stuffed_len,
     return 0;
 }
 
+static void setup_alarm() {
+    struct sigaction sa;
+    sa.sa_handler = alarm_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    if (sigaction(SIGALRM, &sa, NULL) == -1) {
+        perror("sigaction");
+        exit(1);
+    }
+}
+
 ////////////////////////////////////////////////
 // LLOPEN
 ////////////////////////////////////////////////
@@ -113,7 +124,9 @@ int llopen(LinkLayer connectionParameters)
 
     switch(role) {
         case LlTx: {
-            (void) signal(SIGALRM, alarm_handler);
+            
+            setup_alarm();
+
             State state = START;
             while(tries < nretransmissions) {
                 
@@ -195,14 +208,19 @@ int llopen(LinkLayer connectionParameters)
             return -1;
         }
         case LlRx: {
+            // LIMPA qualquer byte residual no buffer
+
             State state = START;
             unsigned char byte;
             
             while(state != STOPP) {
                 int bytesRead = readByteSerialPort(&byte);
-                // if (bytesRead < 0) return -1; // Error
-                // if (bytesRead == 0) continue; // No data
-                if (bytesRead == 1) {
+                if (bytesRead != 1) {
+                    // Isso NUNCA acontece com VMIN=1, VTIME=0
+                    // Mas deixamos por segurança
+                    continue;
+                }
+
                     switch(state){
 
                         case START:
@@ -248,7 +266,7 @@ int llopen(LinkLayer connectionParameters)
                                 break;
 
                     }
-                }
+                
             }
 
             int bytesWritten = writeBytesSerialPort(UA_FRAME, 5);
@@ -333,6 +351,8 @@ int llwrite(const unsigned char *buf, int bufSize)
        ns, frameSize, expected_rr, expected_rej);
     printf("llwrite: Frame header: %02X %02X %02X %02X\n", frame[0], frame[1], frame[2], frame[3]);
     printf("llwrite: Frame end: ... %02X\n", frame[frameSize-1]);
+    
+    setup_alarm();
 
     int tries = 0;
     while (tries < nretransmissions){
@@ -560,7 +580,9 @@ int llread(unsigned char *packet)
 ////////////////////////////////////////////////
 int llclose()
 {
-    (void) signal(SIGALRM, alarm_handler);
+    // (void) signal(SIGALRM, alarm_handler);
+    setup_alarm();
+    
     State state = START;
     unsigned char byte;
     int tries = 0;
