@@ -11,19 +11,18 @@
 #include <stdbool.h>
 #include <string.h>
 
-// MISC
-#define _POSIX_SOURCE 1 // POSIX compliant source
+#define _POSIX_SOURCE 1 
 #define BUF_SIZE 256
 #define FLAG 0x7E
-#define A_T 0x03 // Endereço de Comando (T -> R)
-#define A_R 0x01 // Endereço de Resposta (R -> T)
-#define C_SET 0x03 // Campo de Controlo para SET
-#define C_UA 0x07  // Campo de Controlo para UA
-#define BCC_SET (A_T ^ C_SET) // BCC para SET: 0x03 ^ 0x03 = 0x00
-#define BCC_UA (A_R ^ C_UA)  // BCC para UA: 0x01 ^ 0x07 = 0x06
+#define A_T 0x03 
+#define A_R 0x01 
+#define C_SET 0x03 
+#define C_UA 0x07 
+#define BCC_SET (A_T ^ C_SET) 
+#define BCC_UA (A_R ^ C_UA) 
 #define ESC 0x7D
-#define STUFF_7E 0x5E  // 0x7E -> {0x7D, 0x5E}
-#define STUFF_7D 0x5D  // 0x7D -> {0x7D, 0x5D}
+#define STUFF_7E 0x5E  
+#define STUFF_7D 0x5D 
 #define C_DISC 0x0B 
 #define C_I(ns) ((ns) ? 0x40 : 0x00)
 #define C_RR(nr) (0x05 | ((nr) << 7))
@@ -81,7 +80,7 @@ static int destuff(const unsigned char *stuffed, int stuffed_len,
             } else if (stuffed[i] == STUFF_7D) {
                 destuffed[j++] = ESC;
             } else {
-                return -1;  // Sequência inválida
+                return -1;  
             }
         } else {
             destuffed[j++] = stuffed[i];
@@ -114,7 +113,6 @@ int llopen(LinkLayer connectionParameters)
     role = connectionParameters.role;
 
 
-    //error handling
     if (openSerialPort(connectionParameters.serialPort, connectionParameters.baudRate) < 0) return -1;
 
     printf("Serial port %s opened\n", connectionParameters.serialPort);
@@ -131,7 +129,6 @@ int llopen(LinkLayer connectionParameters)
             while(tries < nretransmissions) {
                 
                 int bytesWritten = writeBytesSerialPort(SET_FRAME, 5);
-                //error handling
                 if (bytesWritten != 5) return -1;
                 
                 alarm(timeout);
@@ -208,7 +205,6 @@ int llopen(LinkLayer connectionParameters)
             return -1;
         }
         case LlRx: {
-            // LIMPA qualquer byte residual no buffer
 
             State state = START;
             unsigned char byte;
@@ -269,7 +265,6 @@ int llopen(LinkLayer connectionParameters)
 
             int bytesWritten = writeBytesSerialPort(UA_FRAME, 5);
             
-            //error handling
             if(bytesWritten != 5) {
                 perror("writeBytesSerialPort UA");
                 return -1;  
@@ -289,33 +284,29 @@ int llopen(LinkLayer connectionParameters)
 ////////////////////////////////////////////////
 int llwrite(const unsigned char *buf, int bufSize)
 {
-    static int ns = 0; //sequence number
+    static int ns = 0; 
 
     if (role != LlTx) {
         printf("llread called in wrong role (not Tx)\n");
         return -1;
     }
 
-    // Check preconditions
     if (buf == NULL || bufSize <= 0 || bufSize > MAX_PAYLOAD_SIZE) {
         printf("Failed preconditions");
         return -1;
     }
 
-    // Calculate BCC2
     unsigned char bcc2 = 0;
     for (int i = 0; i < bufSize; i++) {
         bcc2 ^= buf[i];
     }
 
-    // Prepare data with BCC2 (before stuffing)
     unsigned char data[bufSize + 1];
-    memcpy(data, buf, bufSize); //copy a sequence of bytes from buf to data, (bufSize = number of bytes being copied)
+    memcpy(data, buf, bufSize);
     data[bufSize] = bcc2;
     int dataSize = bufSize + 1;
 
-    // Perform byte stuffing
-    unsigned char stuffed[2 * dataSize];  // Worst-case size
+    unsigned char stuffed[2 * dataSize];
     int stuffedSize = 0;
     for (int i = 0; i < dataSize; i++) {
         if (data[i] == FLAG) {
@@ -329,10 +320,9 @@ int llwrite(const unsigned char *buf, int bufSize)
         }
     }
 
-    // Build I frame
-    unsigned char C = C_I(ns); // 0x00 or 0x40
+    unsigned char C = C_I(ns); 
     unsigned char bcc1 = A_T ^ C;
-    int frameSize = stuffedSize + 5; // FLAG | A | C | BCC1 | stuffed_data | FLAG
+    int frameSize = stuffedSize + 5; 
     unsigned char frame[frameSize];
     frame[0] = FLAG;
     frame[1] = A_T;
@@ -341,9 +331,8 @@ int llwrite(const unsigned char *buf, int bufSize)
     memcpy(frame + 4, stuffed, stuffedSize);
     frame[frameSize - 1] = FLAG;
 
-    // Prepare for retransmissions
-    unsigned char expected_rr = C_RR(1 - ns); // 0x05 | (nr << 7)
-    unsigned char expected_rej = C_REJ(ns);        // 0x01 | (ns << 7)
+    unsigned char expected_rr = C_RR(1 - ns); 
+    unsigned char expected_rej = C_REJ(ns);  
    
     printf("llwrite: Sending ns=%d. Frame size=%d. Expecting RR=%02X or REJ=%02X\n",
        ns, frameSize, expected_rr, expected_rej);
@@ -354,20 +343,18 @@ int llwrite(const unsigned char *buf, int bufSize)
 
     int tries = 0;
     while (tries < nretransmissions){
-        // Send frame
         int bytesWritten = writeBytesSerialPort(frame, frameSize);
         if (bytesWritten != frameSize) {
             perror("writeBytesSerialPort I frame");
             return -1;
         }
 
-        // Set alarm
         alarm(timeout);
         timeout_flag = FALSE;
         printf("llwrite (Tentativa %d): Trama I (ns=%d) enviada. Alarme de %ds ativado.\n", tries + 1, ns, timeout);
 
         State state = START;
-        // Wait for response
+
         unsigned char byte, received_A = 0, received_C = 0;
         while (state != STOPP && !timeout_flag) {
             printf("llwrite (Wait Loop): A chamar readByteSerialPort() (bloqueante)...\n");
@@ -406,13 +393,13 @@ int llwrite(const unsigned char *buf, int bufSize)
                     break;
             }
         }
-        alarm(0); // Cancel alarm
+        alarm(0); 
         printf("llwrite (Tentativa %d): Saí do loop de espera. (state=%d, timeout_flag=%d)\n", tries + 1, state, timeout_flag);
         if (state == STOPP) {
                 if (received_C == expected_rr) {
                     printf("Received RR (positive ack)\n");
-                    ns = 1 - ns; // Toggle sequence number
-                    return bufSize; // Success
+                    ns = 1 - ns; 
+                    return bufSize; 
                 } else if (received_C == expected_rej) {
                     continue;
                 }
@@ -428,13 +415,13 @@ int llwrite(const unsigned char *buf, int bufSize)
 
 ////////////////////////////////////////////////
 // LLREAD
-/////////////////////////////////i
+/////////////////////////////////
 
 int llread(unsigned char *packet)
 {
     if (role != LlRx || packet == NULL) return -1;
 
-    static int expected_ns = 0;               // sequência esperada
+    static int expected_ns = 0;
     State state = START;
     unsigned char stuffed[2 * (MAX_PAYLOAD_SIZE + 1)];
     int stuffed_len = 0;
@@ -444,7 +431,7 @@ int llread(unsigned char *packet)
     while (1) {
         unsigned char byte;
         int bytesRead = readByteSerialPort(&byte);
-        if (bytesRead <= 0) continue; //no data
+        if (bytesRead <= 0) continue; 
 
         switch (state) {
             case START:
@@ -487,23 +474,19 @@ int llread(unsigned char *packet)
             case BCC_RCV:
                 if (byte == FLAG) {
                     printf("\nllread: Received potential I-frame end. ns_received=%d. stuffed_len=%d.\n", ns_received, stuffed_len);
-                    // Fim do I-frame recebido
-                    if (stuffed_len < 1) {  // Pelo menos BCC2
+                    if (stuffed_len < 1) { 
                         printf("llread: Frame too short (no BCC2?). Resetting state.\n");
                         state = START;
                         continue;
                     }
 
-                    // 1. Destuff completo (inclui BCC2)
                     unsigned char destuffed[2 * (MAX_PAYLOAD_SIZE + 1)];
                     int destuffed_len = 0;
 
-                    printf("llread: Calling destuff() with stuffed_len=%d\n", stuffed_len); // NOVO PRINTF
-                    int destuff_ret = destuff(stuffed, stuffed_len, destuffed, &destuffed_len); // Guardar retorno
-                    printf("llread: destuff() returned %d. destuffed_len=%d\n", destuff_ret, destuffed_len); // NOVO PRINTF
-                    // O campo de dados + BCC2 deve ter pelo menos 1 byte (BCC2).
-                    // Se destuffed_len == 0 → não tem nem o BCC2 → frame incompleto ou corrompido.
-                    // frame invalido:corrompido ou incompleto
+                    printf("llread: Calling destuff() with stuffed_len=%d\n", stuffed_len); 
+                    int destuff_ret = destuff(stuffed, stuffed_len, destuffed, &destuffed_len); 
+                    printf("llread: destuff() returned %d. destuffed_len=%d\n", destuff_ret, destuffed_len);
+
                     if (destuff_ret != 0 || destuffed_len < 1) {
                         printf("llread: destuff failed or result too short. Sending REJ(%d).\n", ns_received);
                         send_REJ(ns_received);
@@ -511,10 +494,8 @@ int llread(unsigned char *packet)
                         continue;
                     }
 
-                    // 2. Separar BCC2 (último byte) e dados
                     unsigned char bcc2_recv = destuffed[destuffed_len - 1];
                     int data_len = destuffed_len - 1;
-                    // 3. Calcular BCC2
                     unsigned char bcc2_calc = 0;
                     for (int i = 0; i < data_len; i++) {
                         bcc2_calc ^= destuffed[i];
@@ -522,43 +503,38 @@ int llread(unsigned char *packet)
                     
 
 
-                    // 4. Determinar se é novo ou duplicado
                     printf("llread: bcc2_recv=%02X, bcc2_calc=%02X. Data len=%d.\n", bcc2_recv, bcc2_calc, data_len);
                     bool is_new_frame = (ns_received == expected_ns);
                     bool bcc2_error = (bcc2_calc != bcc2_recv);
                     printf("llread: ns_received=%d, expected_ns=%d -> is_new=%d. bcc2_error=%d.\n", ns_received, expected_ns, is_new_frame, bcc2_error);
 
-                    // 5. Resposta conforme especificação (pág. 22)
                     if (bcc2_error) {
                         if (is_new_frame) {
                             printf("llread: BCC2 error on NEW frame. Sending REJ(%d).\n", ns_received);
-                            send_REJ(ns_received);           // Erro em novo → REJ
+                            send_REJ(ns_received);          
                         } else {
                             printf("llread: BCC2 error on DUPLICATE frame. Sending RR(%d).\n", expected_ns);
-                            send_RR(expected_ns);            // Erro em duplicado → RR
+                            send_RR(expected_ns);            
                         }
                         state = START;
                         continue;
                     }
 
-                    // BCC2 correto
                     if (!is_new_frame) {
                         printf("llread: DUPLICATE frame OK. Sending RR(%d).\n", expected_ns);
-                        send_RR(expected_ns);                // Duplicado bom → RR
+                        send_RR(expected_ns);            
                         state = START;
                         continue;
                     }
 
-                    // Sucesso: novo frame, BCC2 OK
                     printf("llread: SUCCESS! New frame OK. Sending RR(%d). Returning %d bytes.\n", (1 - expected_ns), data_len);
                     memcpy(packet, destuffed, data_len);
                     send_RR(1 - expected_ns);
                     expected_ns = 1 - expected_ns;
-                    return data_len;                         // Entrega pacote à camada superior
+                    return data_len;  
 
                 } else {
-                    // Acumula dados stuffed
-                    if (stuffed_len >= (int)sizeof(stuffed) - 1) { //evitar overflows
+                    if (stuffed_len >= (int)sizeof(stuffed) - 1) { 
                         send_REJ(ns_received);
                         state = START;
                     }
@@ -579,7 +555,7 @@ int llread(unsigned char *packet)
 int llclose()
 {
     setup_alarm();
-
+    
     State state = START;
     unsigned char byte;
     int tries = 0;
@@ -593,14 +569,12 @@ int llclose()
             while (tries < nretransmissions) {
 
                 int bytesWritten = writeBytesSerialPort(DISC_T, 5);
-                //error handling
                 if (bytesWritten != 5) {
                     perror("writeBytesSerialPort SET");
                     closeSerialPort();
                     return -1;
                 }
                 
-                //DISC enviado
 
                 alarm(timeout);
                 state = START;
@@ -609,7 +583,6 @@ int llclose()
                 while(state != STOPP && timeout_flag == FALSE) {
 
                     int bytesRead = readByteSerialPort(&byte);
-                    //error handling
                     if(bytesRead == -1) {
                         perror("readByteSerialPort");
                         continue;
@@ -663,15 +636,12 @@ int llclose()
                 alarm(0);
 
                 if(state == STOPP) {
-                    //DISC recebido
                     int bytesWritten = writeBytesSerialPort(UA_T, 5);
-                    //error handling
                     if(bytesWritten != 5) {
                         perror("writeBytesSerialPort UA_T");
                         closeSerialPort();
                         return -1;  
                     }
-                    //UA final enviado
                     printf("Transmitter: final UA sent: 0x%02X 0x%02X 0x%02X 0x%02X 0x%02X\n", 
                         UA_T[0], UA_T[1], UA_T[2], UA_T[3], UA_T[4]);
                     closeSerialPort();
@@ -690,7 +660,6 @@ int llclose()
             while(state != STOPP) {
 
                 int bytesread = readByteSerialPort(&byte);
-                //error handling
                 if (bytesread == -1) {
                     perror("readByteSerialPort");
                     break;
@@ -722,7 +691,6 @@ int llclose()
                         break;
                 }
             }
-            //receiver recebeu DISC
 
             state = START;
            
@@ -730,14 +698,12 @@ int llclose()
             while(tries < nretransmissions) {
 
                 int bytesWritten = writeBytesSerialPort(DISC_R, 5);
-                //error handling
                 if (bytesWritten == -1) {
                     perror("llclose(Rx): writeBytesSerialPort(DISC_RX)");
                     closeSerialPort();
                     return -1;
                 }
 
-                //receiver enviou DISC e aguarda UA final
                 alarm(timeout);
                 timeout_flag = FALSE;
                 state = START;
@@ -745,7 +711,6 @@ int llclose()
                 while(state != STOPP && timeout_flag == FALSE) {
 
                     int bytesRead = readByteSerialPort(&byte);
-                    //error handling
                     if(bytesRead == -1) {
                         perror("readByteSerialPort");
                         break;
@@ -780,16 +745,13 @@ int llclose()
                 alarm(0);
 
                 if(state == STOPP) {
-                    //Rx recebeu UA final do Tx
                     closeSerialPort();
                     return 0;
                 }
 
-                //retry por timeout
                 tries++;
             }
 
-            //tentativas esgotadas
             printf("Rx: Max retransmissões. Forçar fecho.\n");
             closeSerialPort();
             return -1;
