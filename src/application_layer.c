@@ -186,7 +186,9 @@ void handleTransmission(const char *filename)
         if (llwrite(dataPacket, dataPacketSize) < 0) {
             fprintf(stderr, "\nApplication(Tx): llwrite(DATA) failed. Exiting.\n");
             free(dataPacket);
-            break; 
+            free(dataChunk);
+            fclose(file);
+            return;
         }
         free(dataPacket); // Libertar memória após envio
     }
@@ -205,6 +207,9 @@ void handleTransmission(const char *filename)
     printf("Application(Tx): Sending END packet (%d bytes)...\n", endPacketSize);
     if (llwrite(endPacket, endPacketSize) < 0) {
         fprintf(stderr, "Application(Tx): llwrite(END) failed.\n"); // Não precisa de Exiting aqui
+        free(endPacket);
+        fclose(file);
+        return;
     }
     free(endPacket); // Libertar memória após envio
     fclose(file);
@@ -275,7 +280,6 @@ void handleReception(const char *filename) // filename aqui é o nome do ficheir
             fflush(stdout);
         } else if (packet[0] == C_END) {
             printf("\nApplication(Rx): END packet received. Finishing.\n");
-            // Pode opcionalmente chamar parseControlPacket de novo para verificar
             break; // Sair do loop while(true)
         } else {
              fprintf(stderr, "\nApplication(Rx): Received unknown packet type (C=0x%02X). Discarding.\n", packet[0]);
