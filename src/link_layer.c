@@ -51,6 +51,7 @@ volatile int timeout_flag = FALSE;
 
 void alarm_handler(int signo)
 {
+    printf("\n!!! ALARME DISPAROU (signo=%d) !!!\n", signo);
     timeout_flag = TRUE;
 }
 
@@ -118,7 +119,6 @@ int llopen(LinkLayer connectionParameters)
                 
                 int bytesWritten = writeBytesSerialPort(SET_FRAME, 5);
                 //error handling
-                //if (bytesWritten == -1) return -1;
                 if (bytesWritten != 5) return -1;
                 
                 alarm(timeout);
@@ -346,14 +346,20 @@ int llwrite(const unsigned char *buf, int bufSize)
         // Set alarm
         alarm(timeout);
         timeout_flag = FALSE;
+        printf("llwrite (Tentativa %d): Trama I (ns=%d) enviada. Alarme de %ds ativado.\n", tries + 1, ns, timeout);
 
         State state = START;
         // Wait for response
         unsigned char byte, received_A = 0, received_C = 0;
         while (state != STOPP && !timeout_flag) {
+            printf("llwrite (Wait Loop): A chamar readByteSerialPort() (bloqueante)...\n");
             int bytesRead = readByteSerialPort(&byte);
-            if (bytesRead <= 0) { continue; } 
-
+            printf("llwrite (Wait Loop): readByteSerialPort() retornou %d.\n", bytesRead);
+            if (bytesRead <= 0) {
+                printf("llwrite (Wait Loop): bytesRead <= 0. Verificando timeout_flag=%d\n", timeout_flag); 
+                continue; 
+            } 
+            printf("llwrite (Wait Loop): Byte lido: 0x%02X\n", byte);
             switch (state) {
                 case START:
                     if (byte == FLAG) state = FLAG_RCV;
@@ -383,7 +389,7 @@ int llwrite(const unsigned char *buf, int bufSize)
             }
         }
         alarm(0); // Cancel alarm
-
+        printf("llwrite (Tentativa %d): Saí do loop de espera. (state=%d, timeout_flag=%d)\n", tries + 1, state, timeout_flag);
         if (state == STOPP) {
                 if (received_C == expected_rr) {
                     printf("Received RR (positive ack)\n");
@@ -392,6 +398,9 @@ int llwrite(const unsigned char *buf, int bufSize)
                 } else if (received_C == expected_rej) {
                     continue;
                 }
+        }
+        if (timeout_flag) {
+            printf("llwrite (Tentativa %d): TIMEOUT DETETADO. Retentando...\n", tries + 1);
         }
         tries++;
     }
